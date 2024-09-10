@@ -1,4 +1,4 @@
-添加timeout超时时间，解决info all超时问题
+添加timeout超时时间，可解决info all慢，导致的监控断连问题 PIKA_TIMEOUT默认值为1s
 
 # Pika Metric Exporter #
 
@@ -54,6 +54,7 @@ scrape_configs:
 | log.level            | PIKA_EXPORTER_LOG_LEVEL            | info     | Log level, valid options: `panic` `fatal` `error` `warn` `warning` `info` `debug`.                                                                                                                                                                                                                                                | --log.level "debug"                           |
 | log.format           | PIKA_EXPORTER_LOG_FORMAT           | json     | Log format, valid options: `txt` `json`.                                                                                                                                                                                                                                                                                          | --log.format "json"                           |
 | version              |                                    | false    | Show version information and exit.                                                                                                                                                                                                                                                                                                | --version                                     |
+| timeout              | PIKA_TIMEOUT                       | 1    | 可解决info all慢，导致的监控断连问题                                                                                                                                                                                                                                                                                                | --timeout                                     |
 
 ## Pika Exporter Metrics Definition ##
 Disable Pika-Exporter's process metrics and go metrics.
