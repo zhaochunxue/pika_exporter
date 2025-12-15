@@ -36,6 +36,11 @@ type exporter struct {
 	wg                  sync.WaitGroup
 	done                chan struct{}
 	lastDataStats       map[string]string
+
+	nodeCompactStartTime    map[string]int64   // 当前压缩的开始时间戳（秒）
+	nodeLastCompactTime     map[string]int64   // 上次压缩的开始时间戳（秒）
+	nodeLastCompactDuration map[string]float64 // 上次压缩的耗时（秒）
+	compactMutex            sync.RWMutex       // 并发安全锁
 }
 
 func NewPikaExporter(dis discovery.Discovery, namespace string,
@@ -46,6 +51,10 @@ func NewPikaExporter(dis discovery.Discovery, namespace string,
 		mutex:         new(sync.Mutex),
 		done:          make(chan struct{}),
 		lastDataStats: make(map[string]string),
+
+		nodeCompactStartTime:    make(map[string]int64),
+		nodeLastCompactTime:     make(map[string]int64),
+		nodeLastCompactDuration: make(map[string]float64),
 	}
 
 	var err error
@@ -62,6 +71,11 @@ func NewPikaExporter(dis discovery.Discovery, namespace string,
 	go e.statsData()
 	go e.statsKeySpace(statsClockHour)
 	return e, nil
+}
+
+// 辅助函数：生成节点的唯一键（addr+alias）
+func (e *exporter) getNodeKey(addr, alias string) string {
+	return addr + "|" + alias
 }
 
 func (e *exporter) initMetrics() {
@@ -234,6 +248,43 @@ func (e *exporter) collectInfo(c *client, ch chan<- prometheus.Metric) error {
 	extracts[metrics.LabelNameAddr] = c.Addr()
 	extracts[metrics.LabelNameAlias] = c.Alias()
 
+	// 1. 解析原生的 is_compact 状态
+	currentCompactState := extracts["is_compact"]
+	if currentCompactState == "" {
+		currentCompactState = "No"
+	}
+	nodeKey := e.getNodeKey(c.Addr(), c.Alias())
+	now := time.Now().Unix()
+	nowFloat := float64(now)
+
+	// 2. 加锁处理状态变化
+	e.compactMutex.Lock()
+	defer e.compactMutex.Unlock()
+
+	// 获取内部状态
+	currentStartTime := e.nodeCompactStartTime[nodeKey]
+	lastCompactTime := e.nodeLastCompactTime[nodeKey]
+	lastDuration := e.nodeLastCompactDuration[nodeKey]
+
+	// 3. 状态变化处理（无重复状态存储）
+	switch currentCompactState {
+	case "Yes":
+		// 若当前是压缩中且未记录开始时间，初始化
+		if currentStartTime == 0 {
+			e.nodeCompactStartTime[nodeKey] = now
+		}
+	case "No":
+		// 若当前是未压缩且有开始时间，计算耗时并更新
+		if currentStartTime > 0 {
+			duration := nowFloat - float64(currentStartTime)
+			e.nodeLastCompactDuration[nodeKey] = duration
+			e.nodeLastCompactTime[nodeKey] = currentStartTime
+			// 清空当前开始时间
+			e.nodeCompactStartTime[nodeKey] = 0
+		}
+	}
+
+	// 原逻辑
 	collector := metrics.CollectFunc(func(m metrics.Metric) error {
 		promMetric, err := prometheus.NewConstMetric(
 			prometheus.NewDesc(prometheus.BuildFQName(e.namespace, "", m.Name), m.Help, m.Labels, nil),
@@ -253,6 +304,35 @@ func (e *exporter) collectInfo(c *client, ch chan<- prometheus.Metric) error {
 	for _, m := range metrics.MetricConfigs {
 		m.Parse(m, collector, parseOpt)
 	}
+
+	// 5. 暴露两个压缩指标
+	// 5.1 last_compact_time：上次压缩的开始时间戳
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			prometheus.BuildFQName(e.namespace, "", "last_compact_time"),
+			"Pika serve instance last compact start unix timestamp",
+			[]string{metrics.LabelNameAddr, metrics.LabelNameAlias},
+			nil,
+		),
+		prometheus.GaugeValue,
+		float64(lastCompactTime),
+		c.Addr(),
+		c.Alias(),
+	)
+
+	// 5.2 last_compact_duration_seconds：上次压缩的耗时
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc(
+			prometheus.BuildFQName(e.namespace, "", "last_compact_duration_seconds"),
+			"Pika serve instance last compact duration in seconds",
+			[]string{metrics.LabelNameAddr, metrics.LabelNameAlias},
+			nil,
+		),
+		prometheus.GaugeValue,
+		lastDuration,
+		c.Addr(),
+		c.Alias(),
+	)
 
 	return nil
 }
