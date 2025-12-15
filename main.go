@@ -31,6 +31,7 @@ var (
 	logFormat          = flag.String("log.format", getEnv("PIKA_EXPORTER_LOG_FORMAT", "json"), "Log format, valid options: txt and json.")
 	showVersion        = flag.Bool("version", false, "Show version information and exit.")
 	timeout            = flag.Int("timeout", getEnvInt("PIKA_TIMEOUT", 1), "timeout")
+	redisMetricsOnly   = flag.Bool("redis-only-metrics", getEnvBool("REDIS_EXPORTER_REDIS_ONLY_METRICS", false), "Whether to also export go runtime metrics")
 )
 
 func getEnv(key string, defaultVal string) string {
@@ -92,6 +93,11 @@ func main() {
 	buildInfo.WithLabelValues(BuildVersion, BuildCommitSha, BuildDate, GoVersion).Set(1)
 
 	registry := prometheus.NewRegistry()
+	if !*redisMetricsOnly {
+		registry.MustRegister(prometheus.NewGoCollector())
+		registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	}
+	
 	registry.MustRegister(e)
 	registry.MustRegister(buildInfo)
 	http.Handle(*metricPath, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
